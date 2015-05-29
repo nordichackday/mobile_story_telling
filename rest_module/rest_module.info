@@ -1,0 +1,19 @@
+name = Rest Module
+description = REST module
+package = Rest
+core = 7.x
+files[] = rest_module.install
+files[] = rest_module.module
+
+dependencies[] = file
+dependencies[] = image
+dependencies[] = system
+dependencies[] = token
+dependencies[] = services
+
+
+; Information added by drupal.org packaging script on 2011-08-17
+version = "7.x-0.3"
+core = "7.x"
+project = "rest_module"
+datestamp = ""

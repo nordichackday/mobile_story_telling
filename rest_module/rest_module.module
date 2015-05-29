@@ -1,0 +1,278 @@
+<?php
+/**
+* Implements of hook_services_resources().
+*  #dependancies: services libraries
+*/
+
+function rest_module_services_resources() {
+
+  $api = array(
+	  'story' => array(
+		  'operations' => array(
+			  'retrieve' => array(
+				  'help' => 'Retrieves posted news',
+				  'callback' => 'rest_module_story_retrieve',
+				  'access callback' => 'user_access',
+				  'access arguments' => array('access content'),
+				  'access arguments append' => FALSE,
+				  'args' => array(
+					  array(
+						  'name' => 'fn',
+						  'type' => 'string',
+						  'description' => 'Function to perform',
+						  'source' => array('path' => '0'),
+						  'optional' => TRUE,
+						  'default' => '0',
+					  ),
+					  array(
+						  'name' => 'nid',
+						  'type' => 'int',
+						  'description' => 'Node id of the story',
+						  'source' => array('param' => 'nid'),
+						  'optional' => TRUE,
+						  'default' => '0',
+					  ),
+				  ),
+			  ),
+
+		  ),
+	  ),
+  );
+
+  return $api;
+}
+
+function rest_module_story_retrieve($fn, $nid){
+	$story = null;
+	$storyQuery = new EntityFieldQuery;
+	$result = $storyQuery
+		->entityCondition('entity_type', 'node')
+		->propertyCondition('type', 'story')
+		->propertyCondition('status', 1, '=')
+		->propertyCondition('nid', $nid, '=')
+		->execute();
+
+	if (!empty($result['node'])) {
+		$story = entity_load('node', array_keys($result['node']));
+		$story = array_values($story);
+		$story = $story[0];
+	}
+
+	if(isset($story->field_image_atom[LANGUAGE_NONE])){
+		$story->field_image_atom['image'] = scald_atom_load($story->field_image_atom[LANGUAGE_NONE][0]['sid']);
+	}
+
+	if(isset($story->field_fragment[LANGUAGE_NONE])){
+		foreach( $story->field_fragment[LANGUAGE_NONE] as &$fragment){
+			$fragment['node'] = node_load($fragment['target_id']);
+
+			if($fragment['node']->type == 'timeline'){
+				$fragment['node'] = rest_module_load_timeline($fragment['node']);
+			}
+			else{
+				if(isset($fragment['node']->field_image_atom[LANGUAGE_NONE])){
+					foreach($fragment['node']->field_image_atom[LANGUAGE_NONE] as &$atom){
+						$atom['scald_atom'] = scald_atom_load($atom['sid']);
+					}
+				}
+
+				if(isset($fragment['node']->field_image_w_caption[LANGUAGE_NONE])){
+					foreach($fragment['node']->field_image_w_caption[LANGUAGE_NONE] as &$field_collection){
+						$fc = field_collection_field_get_entity($field_collection);
+						$field_collection['image'] = scald_atom_load($fc->field_image_atom[LANGUAGE_NONE][0]['sid']);
+						$field_collection['caption'] = (isset($fc->field_caption[LANGUAGE_NONE])) ? $fc->field_caption[LANGUAGE_NONE][0]['value'] : null;
+					}
+				}
+
+				$fragment['node']->field_text_position[LANGUAGE_NONE][0]['taxonomy'] =
+					taxonomy_term_load($fragment['node']->field_text_position[LANGUAGE_NONE][0]['tid']);
+				if(isset($fragment['node']->field_subtype[LANGUAGE_NONE])){
+					$fragment['node']->field_subtype[LANGUAGE_NONE][0]['taxonomy'] =
+						taxonomy_term_load($fragment['node']->field_subtype[LANGUAGE_NONE][0]['tid']);
+				}
+			}
+		}
+	}
+
+	if(isset($story->field_author[LANGUAGE_NONE])){
+		foreach( $story->field_author[LANGUAGE_NONE] as &$author){
+			$author['user'] = user_load($author['target_id']);
+		}
+	}
+
+	$story->field_story_theme[LANGUAGE_NONE][0]['taxonomy'] = taxonomy_term_load($story->field_story_theme[LANGUAGE_NONE][0]['tid']);
+
+	$story = constructStoryObject($story);
+
+	return $story;
+}
+
+function constructStoryObject($node){
+	$fragments = null;
+	$story = new stdClass();
+	$story->title = $node->title;
+	$story->theme = $node->field_story_theme[LANGUAGE_NONE][0]['taxonomy']->name;
+	$story->subtitle = (isset($node->field_subtitle[LANGUAGE_NONE])) ? $node->field_subtitle[LANGUAGE_NONE][0]['value'] : null;
+	if(isset($node->field_image_atom['image'])){
+		$image = array();
+		$image['large'] = image_style_url('desktop', $node->field_image_atom['image']->file_source);
+		$image['medium'] = image_style_url('tablet', $node->field_image_atom['image']->file_source);
+		$image['small'] = image_style_url('phone', $node->field_image_atom['image']->file_source);
+	}
+	$story->main_image = $image;
+	$story->summary = (isset($node->body[LANGUAGE_NONE])) ? $node->body[LANGUAGE_NONE][0]['value'] : null;
+	if(isset($node->field_fragment[LANGUAGE_NONE])){
+		foreach($node->field_fragment[LANGUAGE_NONE] as $fragment){
+			$fragment = $fragment['node'];
+			if($fragment->type != "timeline"){
+				$fragment_object = new stdClass();
+				switch($fragment->type){
+					case "panel_image" :
+						$fragment_object->section = "panel_image";
+						$fragment_object->text_position = $fragment->field_text_position[LANGUAGE_NONE][0]['taxonomy']->name;
+						break;
+
+					case "panel_text" :
+						$fragment_object->section = "panel_text";
+						$fragment_object->first_image_as_cover = ($fragment->first_image_as_cover[LANGUAGE_NONE]) ? true : false;
+						$fragment_object->text_type = $fragment->field_subtype[LANGUAGE_NONE][0]['taxonomy']->name;
+						break;
+
+					case "panel_video" :
+						$fragment_object->section = "panel_video";
+						$fragment_object->text_position = $fragment->field_text_position[LANGUAGE_NONE][0]['taxonomy']->name;
+						$fragment_object->youtube_link = (isset($fragment->field_youtube_link[LANGUAGE_NONE]))
+							? $fragment->field_youtube_link[LANGUAGE_NONE][0]['value'] : null;
+						break;
+				}
+				$fragment_object->title = $fragment->title;
+				$fragment_object->display_title = ($fragment->field_display_title[LANGUAGE_NONE]) ? true : false;
+				$fragment_object->subtitle = (isset($fragment->field_subtitle[LANGUAGE_NONE]))
+					? $fragment->field_subtitle[LANGUAGE_NONE][0]['value']
+					: null;
+				$fragment_object->body = (isset($fragment->body[LANGUAGE_NONE]))
+					? $fragment->body[LANGUAGE_NONE][0]['value']
+					: null;
+
+				$images = null;
+				if(isset($fragment->field_image_atom[LANGUAGE_NONE])){
+					foreach($fragment->field_image_atom[LANGUAGE_NONE] as $img){
+						$image = array();
+						$image['large'] = image_style_url('desktop', $img['scald_atom']->file_source);
+						$image['medium'] = image_style_url('tablet', $img['scald_atom']->file_source);
+						$image['small'] = image_style_url('phone', $img['scald_atom']->file_source);
+						$images[] = $image;
+					}
+					$fragment_object->images = $images;
+				}
+
+				if(isset($fragment->field_image_w_caption[LANGUAGE_NONE])){
+					foreach($fragment->field_image_w_caption[LANGUAGE_NONE] as $img){
+						$image = array();
+						$image['large'] = image_style_url('desktop', $img['image']->file_source);
+						$image['medium'] = image_style_url('tablet', $img['image']->file_source);
+						$image['small'] = image_style_url('phone', $img['image']->file_source);
+						$image['caption'] = $img['caption'];
+						$images[] = $image;
+					}
+					$fragment_object->images = $images;
+				}
+			}
+			else{
+				$fragment_object = rest_module_create_timeline_object($fragment);
+			}
+			$fragments[] = $fragment_object;
+		}
+	}
+
+	$story->sections = $fragments;
+
+	$authors = array();
+	foreach($node->field_author[LANGUAGE_NONE] as $author){
+		$author = $author['user'];
+		$author_object = new stdClass();
+		$author_object->name = $author->name;
+		$author_object->email = $author->mail;
+		$authors[] = $author_object;
+	}
+	$story->authors = $authors;
+
+	return $story;
+}
+
+function rest_module_load_timeline($node){
+	foreach($node->field_timeline_fragments[LANGUAGE_NONE] as &$fragment){
+		$fragment['node'] = node_load($fragment['target_id']);
+		if(isset($fragment['node']->field_image_w_caption[LANGUAGE_NONE])){
+			foreach($fragment['node']->field_image_w_caption[LANGUAGE_NONE] as &$atom){
+				$fc = field_collection_field_get_entity($atom);
+				$atom['fc'] = $fc;
+				$atom['image'] = scald_atom_load($fc->field_image_atom[LANGUAGE_NONE][0]['sid']);
+				$atom['caption'] = $fc->field_caption[LANGUAGE_NONE][0]['value'];
+			}
+		}
+	}
+
+	$node->field_theme[LANGUAGE_NONE][0]['taxonomy'] = taxonomy_term_load($node->field_theme[LANGUAGE_NONE][0]['tid']);
+
+	return $node;
+}
+
+function rest_module_create_timeline_object($fragment){
+	$fragments = null;
+	$timeline = new stdClass();
+	$timeline->section = $fragment->type;
+	$timeline->title = $fragment->title;
+	$timeline->theme = $fragment->field_theme[LANGUAGE_NONE][0]['taxonomy']->name;
+	$timeline->body = $fragment->body[LANGUAGE_NONE][0]['value'];
+	$timeline->display_title = ($fragment->field_display_title[LANGUAGE_NONE][0]['value'] == 1) ? true : false;
+
+	if(isset($fragment->field_timeline_fragments[LANGUAGE_NONE])) {
+		foreach ($fragment->field_timeline_fragments[LANGUAGE_NONE] as $fragment) {
+			$fragment = $fragment['node'];
+			$fragment_object = new stdClass();
+			$fragment_object->title = $fragment->title;
+			$fragment_object->body = (isset($fragment->body[LANGUAGE_NONE])) ? $fragment->body[LANGUAGE_NONE][0]['value'] : null;
+
+			$images = null;
+			if(isset($fragment->field_image_atom[LANGUAGE_NONE])) {
+				foreach ($fragment->field_image_atom[LANGUAGE_NONE] as $img) {
+					$image = array();
+					$image['large'] = image_style_url('desktop', $img['scald_atom']->file_source);
+					$image['medium'] = image_style_url('tablet', $img['scald_atom']->file_source);
+					$image['small'] = image_style_url('phone', $img['scald_atom']->file_source);
+					$images[] = $image;
+				}
+			}
+			if(isset($fragment->field_image_w_caption[LANGUAGE_NONE])){
+				foreach($fragment->field_image_w_caption[LANGUAGE_NONE] as $img){
+					$image = array();
+					$image['large'] = image_style_url('desktop', $img['image']->file_source);
+					$image['medium'] = image_style_url('tablet', $img['image']->file_source);
+					$image['small'] = image_style_url('phone', $img['image']->file_source);
+					$image['caption'] = $img['caption'];
+					$images[] = $image;
+				}
+				$fragment_object->images = $images;
+				$fragment_object->youtube_link = (isset($fragment->field_youtube_link[LANGUAGE_NONE]))
+					? $fragment->field_youtube_link[LANGUAGE_NONE][0]['value']
+					: null;
+				$fragment_object->latitude = (isset($fragment->field_latitude[LANGUAGE_NONE]))
+					? $fragment->field_latitude[LANGUAGE_NONE][0]['value']
+					: null;
+				$fragment_object->longitude = (isset($fragment->field_longitude[LANGUAGE_NONE]))
+					? $fragment->field_longitude[LANGUAGE_NONE][0]['value']
+					: null;
+				$fragment_object->date = (isset($fragment->field_date[LANGUAGE_NONE]))
+					? strftime('%d.%m %Y', $fragment->field_date[LANGUAGE_NONE][0]['value'] )
+					: null;
+
+				$fragment_object->images = $images;
+			}
+			$fragments[] = $fragment_object;
+		}
+	}
+	$timeline->sections = $fragments;
+
+	return $timeline;
+}
